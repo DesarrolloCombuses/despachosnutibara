@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -1254,6 +1254,7 @@
         const SUPABASE_ANON_KEY = 'sb_publishable_qc1_0Ol8KcQiAGgc95odnA_UuPy4EyJ';
         const VEHICULOS_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSrLDxUDhCc30Bv7z2yHcJltM-dm-dripio0YQRRnI61vQhL7Aj4CL5pDnjkjUEqkqKwxZauxl8zOvD/pub?gid=1160388932&single=true&output=csv';
         const CONDUCTORES_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vThNrFZLbNklMFtPeg0wF4TA1vZHnZ4YNMmGcnHfty_RoNuAQw__iV2GMXqTsv36MPiks1ARpYui1JK/pub?gid=0&single=true&output=csv';
+        const APPS_SCRIPT_WEBAPP_URL = 'https://script.google.com/macros/s/AKfycbwMKd6A0KzV6h5SkW_ghbEvmr4qrvH_HbBl0Relrt5gTUQTfXrSh7d9hrSxERM_8_y8vA/exec';
 
         // Variables globales
         let supabaseClient = null;
@@ -2283,11 +2284,59 @@
                     app_script_payload: {}
                 };
 
-                const { error } = await supabaseClient.from('dispatches').insert([payload]);
+                const { data: despachoInsertado, error } = await supabaseClient
+                    .from('dispatches')
+                    .insert([payload])
+                    .select('id')
+                    .single();
                 if (error) throw error;
 
+                const payloadAppsScript = construirPayloadAppsScriptDesdeDespacho(payload);
+                let resultadoAppsScript = {
+                    sent: false,
+                    ok: false,
+                    reason: 'No ejecutado'
+                };
+
+                if (payloadAppsScript.mId && payloadAppsScript.itinerary && payloadAppsScript.drvId) {
+                    try {
+                        resultadoAppsScript = await enviarDespachoAAppsScript(payloadAppsScript);
+                    } catch (appErr) {
+                        resultadoAppsScript = {
+                            sent: true,
+                            ok: false,
+                            error: String(appErr?.message || appErr)
+                        };
+                    }
+                } else {
+                    resultadoAppsScript = {
+                        sent: false,
+                        ok: false,
+                        reason: 'Faltan IDs para Apps Script',
+                        payload: payloadAppsScript
+                    };
+                }
+
+                if (despachoInsertado?.id) {
+                    await supabaseClient
+                        .from('dispatches')
+                        .update({
+                            app_script_sent: !!resultadoAppsScript.ok,
+                            app_script_payload: {
+                                request: payloadAppsScript,
+                                response: resultadoAppsScript,
+                                sent_at: new Date().toISOString()
+                            }
+                        })
+                        .eq('id', despachoInsertado.id);
+                }
+
                 cerrarModalAccion();
-                alert('✅ Despacho generado correctamente');
+                if (resultadoAppsScript.ok) {
+                    alert('✅ Despacho generado y enviado a Apps Script correctamente');
+                } else {
+                    alert('✅ Despacho generado. Apps Script no confirmó envío, revisa app_script_payload en dispatches.');
+                }
                 limpiarFormularioDespachoNativo();
                 conductorActual = null;
                 turnoActivoActual = null;
@@ -2316,6 +2365,42 @@
             renderRutasDespachoNativo();
             actualizarItinerarioSeleccionadoUI();
             iniciarRelojDespacho();
+        }
+
+        function construirPayloadAppsScriptDesdeDespacho(payload) {
+            const mId = String(payload.vehicle_external_id || payload.vehicle_internal || payload.vehicle || '').trim();
+            const itinerary = String(payload.itinerary_id || '').trim();
+            const drvId = String(payload.driver_external_id || payload.driver_cedula || '').trim();
+            return { mId, itinerary, drvId };
+        }
+
+        async function enviarDespachoAAppsScript(payloadAppsScript) {
+            if (!APPS_SCRIPT_WEBAPP_URL) {
+                return {
+                    sent: false,
+                    ok: false,
+                    reason: 'APPS_SCRIPT_WEBAPP_URL no configurada'
+                };
+            }
+
+            const t0 = Date.now();
+            // Apps Script Web App desde navegador suele bloquear CORS.
+            // Usamos no-cors para envío "fire-and-forget".
+            await fetch(APPS_SCRIPT_WEBAPP_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify(payloadAppsScript),
+                cache: 'no-store'
+            });
+
+            return {
+                sent: true,
+                ok: true,
+                status: 'opaque',
+                duration_ms: Date.now() - t0,
+                body: 'no-cors (sin lectura de respuesta por navegador)'
+            };
         }
 
         function actualizarEstadoInternetUI() {
@@ -3978,6 +4063,13 @@
     </script>
 </body>
 </html>
+
+
+
+
+
+
+
 
 
 
